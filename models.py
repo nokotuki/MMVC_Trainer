@@ -444,8 +444,8 @@ class SynthesizerTrn(nn.Module):
         kernel_size,
         p_dropout)
     self.dec = Generator(inter_channels, resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates, upsample_initial_channel, upsample_kernel_sizes, gin_channels=gin_channels)
-    self.enc_pe = PosteriorEncoder(spec_channels, inter_channels, hidden_channels, 5, 1, 16, gin_channels=gin_channels)
-    self.flowA = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels)
+    self.enc_pe = PosteriorEncoder(spec_channels, inter_channels, hidden_channels, 5, 1, 16)
+    self.flowA = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4)
     self.flowB = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels)
 
     if use_sdp:
@@ -463,9 +463,10 @@ class SynthesizerTrn(nn.Module):
       g = self.emb_g(sid).unsqueeze(-1) # [b, h, 1]
     else:
       g = None
-    pe_out, m_pe, logs_pe, pe_out_mask = self.enc_pe(y, y_lengths, g=g)
-    flowa_out = self.flowA(pe_out, pe_out_mask, g=g)
-    flowb_out = self.flowB(flowa_out, pe_out_mask, g=g)
+    pe_out, m_pe, logs_pe, pe_out_mask = self.enc_pe(y, y_lengths)
+    flowa_out = self.flowA(pe_out, pe_out_mask)
+    flowb_out = self.flowB(pe_out, pe_out_mask, g=g)
+    flowb_out_reverse = self.flowB(flowa_out, pe_out_mask, g=g, reverse=True)
 
     with torch.no_grad():
       # negative cross-entropy
@@ -504,12 +505,12 @@ class SynthesizerTrn(nn.Module):
     m_te_b = torch.matmul(attn_b.squeeze(1), m_te.transpose(1, 2)).transpose(1, 2)
     logs_te_b = torch.matmul(attn_b.squeeze(1), logs_te.transpose(1, 2)).transpose(1, 2)
 
-    z_slice, ids_slice = commons.rand_slice_segments(pe_out, y_lengths, self.segment_size)
+    z_slice, ids_slice = commons.rand_slice_segments(flowb_out_reverse, y_lengths, self.segment_size)
     o = self.dec(z_slice, g=g)
     return o, (l_length_a, l_length_b), (attn_a, attn_b), ids_slice, pe_out_mask, pe_out_mask, (pe_out, flowa_out, flowb_out, m_te_a, logs_te_a, m_te_b, logs_te_b, m_pe, logs_pe)
 
   def infer(self, x, x_lengths, sid=None, noise_scale=1, length_scale=1, noise_scale_w=1., max_len=None):
-    x, m_pe, logs_pe, pe_out_mask = self.enc_pe(x, x_lengths)
+    x, m_pe, logs_pe, pe_out_mask = self.enc_te(x, x_lengths)
     if self.n_speakers > 0:
       g = self.emb_g(sid).unsqueeze(-1) # [b, h, 1]
     else:
@@ -526,25 +527,21 @@ class SynthesizerTrn(nn.Module):
     attn_mask = torch.unsqueeze(pe_out_mask, 2) * torch.unsqueeze(y_mask, -1)
     attn = commons.generate_path(w_ceil, attn_mask)
 
-    m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2) # [b, t', t], [b, t, d] -> [b, d, t']
-    logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2) # [b, t', t], [b, t, d] -> [b, d, t']
+    m_pe = torch.matmul(attn.squeeze(1), m_pe.transpose(1, 2)).transpose(1, 2) # [b, t', t], [b, t, d] -> [b, d, t']
+    logs_pe = torch.matmul(attn.squeeze(1), logs_pe.transpose(1, 2)).transpose(1, 2) # [b, t', t], [b, t, d] -> [b, d, t']
 
-    z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
-    z_hat = self.flowB(z_p, y_mask, g=g, reverse=True)
-    z = self.flowA(z_hat, y_mask, g=g, reverse=True)
+    z_p = m_pe + torch.randn_like(m_pe) * torch.exp(logs_pe) * noise_scale
+    z = self.flowB(z_p, y_mask, g=g, reverse=True)
     o = self.dec((z * y_mask)[:,:,:max_len], g=g)
-    return o, attn, y_mask, (z, z_p, m_p, logs_p)
+    return o, attn, y_mask, (z, z_p, m_pe, logs_pe)
 
   def voice_conversion(self, y, y_lengths, sid_src, sid_tgt):
     assert self.n_speakers > 0, "n_speakers have to be larger than 0."
-    g_src = self.emb_g(sid_src).unsqueeze(-1)
     g_tgt = self.emb_g(sid_tgt).unsqueeze(-1)
-    z, _, _, y_mask = self.enc_pe(y, y_lengths, g=g_src)
-    z_a = self.flowA(z, y_mask, g=g_src)
-    z_b = self.flowB(z_a, y_mask, g=g_src)
-    z_b_hat = self.flowB(z_b, y_mask, g=g_tgt, reverse=True)
-    z_a_hat = self.flowA(z_b_hat, y_mask, g=g_tgt, reverse=True)
-    o_hat = self.dec(z_a_hat * y_mask, g=g_tgt)
+    pe_out, _, _, pe_out_mask = self.enc_pe(y, y_lengths)
+    flowa_out = self.flowA(pe_out, pe_out_mask)
+    flowb_out_reverse = self.flowB(flowa_out, pe_out_mask, g=sid_tgt, reverse=True)
+    o_hat = self.dec(flowb_out_reverse * pe_out_mask, g=g_tgt)
     return o_hat
 
   def voice_ra_pa_db(self, y, y_lengths, sid_src, sid_tgt):
