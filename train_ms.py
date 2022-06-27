@@ -107,6 +107,7 @@ def run(rank, n_gpus, hps):
       n_speakers=hps.data.n_speakers,
       **hps.model).cuda(rank)
   net_d = MultiPeriodDiscriminator(hps.model.use_spectral_norm).cuda(rank)
+  net_d_sid = MultiPeriodDiscriminator(hps.model.use_spectral_norm).cuda(rank)
   optim_g = torch.optim.AdamW(
       net_g.parameters(), 
       hps.train.learning_rate, 
@@ -117,15 +118,23 @@ def run(rank, n_gpus, hps):
       hps.train.learning_rate, 
       betas=hps.train.betas, 
       eps=hps.train.eps)
+  optim_d_sid = torch.optim.AdamW(
+      net_d_sid.parameters(),
+      hps.train.learning_rate, 
+      betas=hps.train.betas, 
+      eps=hps.train.eps)
   net_g = DDP(net_g, device_ids=[rank])
   net_d = DDP(net_d, device_ids=[rank])
+  net_d_sid = DDP(net_d_sid, device_ids=[rank])
 
   logger.info('FineTuning : '+str(hps.fine_flag))
   if hps.fine_flag:
       logger.info('Load model : '+str(hps.fine_model_g))
       logger.info('Load model : '+str(hps.fine_model_d))
+      logger.info('Load model : '+str(hps.fine_model_d_sid))
       _, _, _, epoch_str = utils.load_checkpoint(hps.fine_model_g, net_g, optim_g)
       _, _, _, epoch_str = utils.load_checkpoint(hps.fine_model_d, net_d, optim_d)
+      _, _, _, epoch_str = utils.load_checkpoint(hps.fine_model_d_sid, net_d_sid, optim_d)
       epoch_str = 1
       global_step = 0
 
@@ -133,6 +142,7 @@ def run(rank, n_gpus, hps):
     try:
       _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path(hps.model_dir, "G_*.pth"), net_g, optim_g)
       _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path(hps.model_dir, "D_*.pth"), net_d, optim_d)
+      _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path(hps.model_dir, "D_SID_*.pth"), net_d_sid, optim_d_sid)
       global_step = (epoch_str - 1) * len(train_loader)
     except:
       epoch_str = 1
@@ -140,22 +150,23 @@ def run(rank, n_gpus, hps):
 
   scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=hps.train.lr_decay, last_epoch=epoch_str-2)
   scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=hps.train.lr_decay, last_epoch=epoch_str-2)
+  scheduler_d_sid = torch.optim.lr_scheduler.ExponentialLR(optim_d_sid, gamma=hps.train.lr_decay, last_epoch=epoch_str-2)
 
   scaler = GradScaler(enabled=hps.train.fp16_run)
 
   for epoch in range(epoch_str, hps.train.epochs + 1):
     if rank==0:
-      train_and_evaluate(rank, epoch, hps, [net_g, net_d], [optim_g, optim_d], [scheduler_g, scheduler_d], scaler, [train_loader, eval_loader], logger, [writer, writer_eval])
+      train_and_evaluate(rank, epoch, hps, [net_g, net_d, net_d_sid], [optim_g, optim_d, optim_d_sid], [scheduler_g, scheduler_d, scheduler_d_sid], scaler, [train_loader, eval_loader], logger, [writer, writer_eval])
     else:
-      train_and_evaluate(rank, epoch, hps, [net_g, net_d], [optim_g, optim_d], [scheduler_g, scheduler_d], scaler, [train_loader, None], None, None)
+      train_and_evaluate(rank, epoch, hps, [net_g, net_d, net_d_sid], [optim_g, optim_d, optim_d_sid], [scheduler_g, scheduler_d, scheduler_d_sid], scaler, [train_loader, None], None, None)
     scheduler_g.step()
     scheduler_d.step()
 
 
 def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers):
-  net_g, net_d = nets
-  optim_g, optim_d = optims
-  scheduler_g, scheduler_d = schedulers
+  net_g, net_d, net_d_sid = nets
+  optim_g, optim_d, optim_d_sid = optims
+  scheduler_g, scheduler_d, _ = schedulers
   train_loader, eval_loader = loaders
   if writers is not None:
     writer, writer_eval = writers
@@ -172,7 +183,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     speakers = speakers.cuda(rank, non_blocking=True)
 
     with autocast(enabled=hps.train.fp16_run):
-      y_hat, l_length, attn, ids_slice, x_mask, z_mask,\
+      (y_hat, rolled_y_hat), l_length, attn, ids_slice, x_mask, z_mask,\
       (z, z_p, m_p, logs_p, m_q, logs_q) = net_g(x, x_lengths, spec, spec_lengths, speakers)
       mel = spec_to_mel_torch(
           spec, 
@@ -193,7 +204,9 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         hps.data.mel_fmin, 
         hps.data.mel_fmax
     )
+    rolled_y_hat = rolled_y_hat.float()
     y = commons.slice_segments(y, ids_slice * hps.data.hop_length, hps.train.segment_size) # slice 
+    rolled_y = torch.roll(y,1,dims=0)
 
     # Discriminator
     y_d_hat_r, y_d_hat_g, _, _ = net_d(y, y_hat.detach())
@@ -206,17 +219,29 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     grad_norm_d = commons.clip_grad_value_(net_d.parameters(), None)
     scaler.step(optim_d)
 
+    # Discriminator_sid
+    rolled_y_d_hat_r, rolled_y_d_hat_g, _, _ = net_d_sid(rolled_y, rolled_y_hat.detach())
+    with autocast(enabled=False):
+      rolled_loss_disc, rolled_losses_disc_r, rolled_losses_disc_g = discriminator_loss(rolled_y_d_hat_r, rolled_y_d_hat_g)
+      rolled_loss_disc_all = rolled_loss_disc
+    optim_d_sid.zero_grad()
+    scaler.scale(rolled_loss_disc_all).backward()
+    scaler.unscale_(optim_d_sid)
+    grad_norm_d_sid = commons.clip_grad_value_(net_d_sid.parameters(), None)
+    scaler.step(optim_d_sid)
+
     with autocast(enabled=hps.train.fp16_run):
       # Generator
       y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(y, y_hat)
+      rolled_y_d_hat_r, rolled_y_d_hat_g, rolled_fmap_r, rolled_fmap_g = net_d_sid(rolled_y, rolled_y_hat)
       with autocast(enabled=False):
         loss_dur = torch.sum(l_length.float())
         loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
         loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
-
+        rolled_loss_gen, rolled_losses_gen = generator_loss(rolled_y_d_hat_g)
         loss_fm = feature_loss(fmap_r, fmap_g)
         loss_gen, losses_gen = generator_loss(y_d_hat_g)
-        loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl
+        loss_gen_all = rolled_loss_gen + loss_gen + loss_fm + loss_mel + loss_dur + loss_kl
     optim_g.zero_grad()
     scaler.scale(loss_gen_all).backward()
     scaler.unscale_(optim_g)
@@ -234,12 +259,15 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         logger.info(datetime.datetime.now(pytz.timezone('Asia/Tokyo')))
         logger.info([x.item() for x in losses] + [global_step, lr])
         
-        scalar_dict = {"loss/g/total": loss_gen_all, "loss/d/total": loss_disc_all, "learning_rate": lr, "grad_norm_d": grad_norm_d, "grad_norm_g": grad_norm_g}
+        scalar_dict = {"loss/g/total": loss_gen_all, "loss/d/total": loss_disc_all, "loss/rolled_d/total": rolled_loss_disc_all, "learning_rate": lr, "grad_norm_d": grad_norm_d, "grad_norm_g": grad_norm_g, "rolled_grad_norm_d": grad_norm_d_sid}
         scalar_dict.update({"loss/g/fm": loss_fm, "loss/g/mel": loss_mel, "loss/g/dur": loss_dur, "loss/g/kl": loss_kl})
 
         scalar_dict.update({"loss/g/{}".format(i): v for i, v in enumerate(losses_gen)})
         scalar_dict.update({"loss/d_r/{}".format(i): v for i, v in enumerate(losses_disc_r)})
         scalar_dict.update({"loss/d_g/{}".format(i): v for i, v in enumerate(losses_disc_g)})
+        scalar_dict.update({"loss/rolled_g/{}".format(i): v for i, v in enumerate(rolled_losses_gen)})
+        scalar_dict.update({"loss/rolled_d_r/{}".format(i): v for i, v in enumerate(rolled_losses_disc_r)})
+        scalar_dict.update({"loss/rolled_d_g/{}".format(i): v for i, v in enumerate(rolled_losses_disc_g)})
         image_dict = { 
             "slice/mel_org": utils.plot_spectrogram_to_numpy(y_mel[0].data.cpu().numpy()),
             "slice/mel_gen": utils.plot_spectrogram_to_numpy(y_hat_mel[0].data.cpu().numpy()), 
@@ -256,6 +284,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         evaluate(hps, net_g, eval_loader, writer_eval, logger)
         utils.save_checkpoint(net_g, optim_g, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "G_{}.pth".format(global_step)))
         utils.save_checkpoint(net_d, optim_d, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "D_{}.pth".format(global_step)))
+        utils.save_checkpoint(net_d, optim_d, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "D_SID_{}.pth".format(global_step)))
     global_step += 1
 
  
@@ -273,7 +302,7 @@ def evaluate(hps, generator, eval_loader, writer_eval, logger):
         #autocastはfp16のおまじない
         with autocast(enabled=hps.train.fp16_run):
           #Generator
-          y_hat, l_length, attn, ids_slice, x_mask, z_mask,\
+          (y_hat, _), l_length, attn, ids_slice, x_mask, z_mask,\
           (z, z_p, m_p, logs_p, m_q, logs_q) = generator(x, x_lengths, spec, spec_lengths, speakers)
 
           mel = spec_to_mel_torch(

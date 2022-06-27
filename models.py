@@ -460,13 +460,16 @@ class SynthesizerTrn(nn.Module):
   def forward(self, x, x_lengths, y, y_lengths, sid=None):
 
     x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
+    rolled_sid = torch.roll(sid,1,dims=0)
     if self.n_speakers > 0:
       g = self.emb_g(sid).unsqueeze(-1) # [b, h, 1]
+      rolled_g = self.emb_g(rolled_sid).unsqueeze(-1) # [b, h, 1]
     else:
       g = None
 
     z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
     z_p = self.flow(z, y_mask, g=g)
+    rolled_z = self.flow(z_p, y_mask, g=rolled_g, reverse=True)
 
     with torch.no_grad():
       # negative cross-entropy
@@ -494,8 +497,10 @@ class SynthesizerTrn(nn.Module):
     logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
 
     z_slice, ids_slice = commons.rand_slice_segments(z, y_lengths, self.segment_size)
+    rolled_z_slice = commons.slice_segments(rolled_z, ids_slice, self.segment_size) # slice 
     o = self.dec(z_slice, g=g)
-    return o, l_length, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q)
+    rolled_o = self.dec(rolled_z_slice, g=g)
+    return (o, rolled_o), l_length, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q)
 
   def infer(self, x, x_lengths, sid=None, noise_scale=1, length_scale=1, noise_scale_w=1., max_len=None):
     x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
