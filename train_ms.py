@@ -18,7 +18,6 @@ import datetime
 import pytz
 import time
 from tqdm import tqdm
-#import warnings
 
 
 import commons
@@ -31,6 +30,7 @@ from data_utils import (
 from models import (
   SynthesizerTrn,
   MultiPeriodDiscriminator,
+  DiscriminatorSpeaker,
 )
 from losses import (
   generator_loss,
@@ -40,11 +40,6 @@ from losses import (
 )
 from mel_processing import mel_spectrogram_torch, spec_to_mel_torch
 from text.symbols import symbols
-
-#stftの警告対策
-#warnings.resetwarnings()
-#warnings.simplefilter('ignore', UserWarning)
-#warnings.simplefilter('ignore', DeprecationWarning)
 
 torch.backends.cudnn.benchmark = True
 global_step = 0
@@ -128,13 +123,25 @@ def run(rank, n_gpus, hps):
       eps=hps.train.eps)
   net_g = parallel(net_g, device_ids=[rank])
   net_d = parallel(net_d, device_ids=[rank])
+  
+  #Speaker Discriminator
+  net_sd = DiscriminatorSpeaker(hps.data.n_speakers, hps.model.use_spectral_norm).cuda(rank)
+  optim_sd = torch.optim.AdamW(
+      net_sd.parameters(),
+      hps.train.learning_rate, 
+      betas=hps.train.betas, 
+      eps=hps.train.eps)
+  net_sd = parallel(net_sd, device_ids=[rank])
+
 
   logger.info('FineTuning : '+str(hps.fine_flag))
   if hps.fine_flag:
       logger.info('Load model : '+str(hps.fine_model_g))
       logger.info('Load model : '+str(hps.fine_model_d))
+      logger.info('Load model : '+str(hps.fine_model_sd))
       _, _, _, epoch_str = utils.load_checkpoint(hps.fine_model_g, net_g, optim_g)
       _, _, _, epoch_str = utils.load_checkpoint(hps.fine_model_d, net_d, optim_d)
+      _, _, _, epoch_str = utils.load_checkpoint(hps.fine_model_sd, net_sd, optim_sd)
       epoch_str = 1
       global_step = 0
 
@@ -142,6 +149,7 @@ def run(rank, n_gpus, hps):
     try:
       _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path(hps.model_dir, "G_*.pth"), net_g, optim_g)
       _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path(hps.model_dir, "D_*.pth"), net_d, optim_d)
+      _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path(hps.model_dir, "SD_*.pth"), net_sd, optim_sd)
       global_step = (epoch_str - 1) * len(train_loader)
     except:
       epoch_str = 1
@@ -149,23 +157,27 @@ def run(rank, n_gpus, hps):
 
   scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=hps.train.lr_decay, last_epoch=epoch_str-2)
   scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=hps.train.lr_decay, last_epoch=epoch_str-2)
+  scheduler_sd = torch.optim.lr_scheduler.ExponentialLR(optim_sd, gamma=hps.train.lr_decay, last_epoch=epoch_str-2)
 
   scaler = GradScaler(enabled=hps.train.fp16_run)
 
   for epoch in range(epoch_str, hps.train.epochs + 1):
     if rank==0:
-      train_and_evaluate(rank, epoch, hps, [net_g, net_d], [optim_g, optim_d], [scheduler_g, scheduler_d], scaler, [train_loader, eval_loader], logger, [writer, writer_eval])
+      train_and_evaluate(rank, epoch, hps, [net_g, net_d, net_sd], [optim_g, optim_d, optim_sd], [scheduler_g, scheduler_d, scheduler_sd], scaler, [train_loader, eval_loader], logger, [writer, writer_eval])
     else:
-      train_and_evaluate(rank, epoch, hps, [net_g, net_d], [optim_g, optim_d], [scheduler_g, scheduler_d], scaler, [train_loader, None], None, None)
+      train_and_evaluate(rank, epoch, hps, [net_g, net_d, net_sd], [optim_g, optim_d, optim_sd], [scheduler_g, scheduler_d, scheduler_sd], scaler, [train_loader, None], None, None)
     scheduler_g.step()
     scheduler_d.step()
+    scheduler_sd.step()
 
 
 def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers):
-  net_g, net_d = nets
-  optim_g, optim_d = optims
-  scheduler_g, scheduler_d = schedulers
+  net_g, net_d, net_sd = nets
+  optim_g, optim_d, optim_sd = optims
+  scheduler_g, scheduler_d, scheduler_sd = schedulers
   train_loader, eval_loader = loaders
+  #speaker onehot vector
+  speakers_onehot = F.one_hot(speakers)
   if writers is not None:
     writer, writer_eval = writers
 
@@ -174,6 +186,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
   net_g.train()
   net_d.train()
+  net_sd.train()
   for batch_idx, (x, x_lengths, spec, spec_lengths, y, y_lengths, speakers) in enumerate(tqdm(train_loader, desc="Epoch {}".format(epoch))):
     x, x_lengths = x.cuda(rank, non_blocking=True), x_lengths.cuda(rank, non_blocking=True)
     spec, spec_lengths = spec.cuda(rank, non_blocking=True), spec_lengths.cuda(rank, non_blocking=True)
@@ -215,6 +228,18 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     grad_norm_d = commons.clip_grad_value_(net_d.parameters(), None)
     scaler.step(optim_d)
 
+    # SpeakerDiscriminator
+    y_hat_label = net_sd(y_hat.detach())
+    y_label = net_sd(y)
+    with autocast(enabled=False):
+      #y_hat_label_loss = torch.sum(torch.abs(y_hat_label - speakers_onehot), 1)
+      loss_speaker_disc_all = F.l1_loss(y_label - speakers_onehot)
+    optim_sd.zero_grad()
+    scaler.scale(loss_speaker_disc_all).backward()
+    scaler.unscale_(optim_sd)
+    grad_norm_sd = commons.clip_grad_value_(net_sd.parameters(), None)
+    scaler.step(optim_sd)
+
     with autocast(enabled=hps.train.fp16_run):
       # Generator
       y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(y, y_hat)
@@ -222,10 +247,10 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         loss_dur = torch.sum(l_length.float())
         loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
         loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
-
+        loss_label = F.l1_loss(y_hat_label - speakers_onehot)
         loss_fm = feature_loss(fmap_r, fmap_g)
         loss_gen, losses_gen = generator_loss(y_d_hat_g)
-        loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl
+        loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl + loss_label
     optim_g.zero_grad()
     scaler.scale(loss_gen_all).backward()
     scaler.unscale_(optim_g)
@@ -236,15 +261,15 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     if rank==0:
       if global_step % hps.train.log_interval == 0:
         lr = optim_g.param_groups[0]['lr']
-        losses = [loss_disc, loss_gen, loss_fm, loss_mel, loss_dur, loss_kl]
+        losses = [loss_disc, loss_gen, loss_fm, loss_mel, loss_dur, loss_kl, loss_speaker_disc_all, loss_label]
         logger.info('Train Epoch: {} [{:.0f}%]'.format(
           epoch,
           100. * batch_idx / len(train_loader)))
         logger.info(datetime.datetime.now(pytz.timezone('Asia/Tokyo')))
         logger.info([x.item() for x in losses] + [global_step, lr])
         
-        scalar_dict = {"loss/g/total": loss_gen_all, "loss/d/total": loss_disc_all, "learning_rate": lr, "grad_norm_d": grad_norm_d, "grad_norm_g": grad_norm_g}
-        scalar_dict.update({"loss/g/fm": loss_fm, "loss/g/mel": loss_mel, "loss/g/dur": loss_dur, "loss/g/kl": loss_kl})
+        scalar_dict = {"loss/g/total": loss_gen_all, "loss/d/total": loss_disc_all, "learning_rate": lr, "grad_norm_d": grad_norm_d, "grad_norm_g": grad_norm_g, "grad_norm_sd": grad_norm_sd}
+        scalar_dict.update({"loss/g/fm": loss_fm, "loss/g/mel": loss_mel, "loss/g/dur": loss_dur, "loss/g/kl": loss_kl, "loss/sd/spk": loss_speaker_disc_all, "loss/g/spk": loss_label})
 
         scalar_dict.update({"loss/g/{}".format(i): v for i, v in enumerate(losses_gen)})
         scalar_dict.update({"loss/d_r/{}".format(i): v for i, v in enumerate(losses_disc_r)})
@@ -262,13 +287,16 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
           scalars=scalar_dict)
         utils.save_checkpoint(net_g, optim_g, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "G_latest_99999999.pth"))
         utils.save_checkpoint(net_d, optim_d, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "D_latest_99999999.pth"))
+        utils.save_checkpoint(net_sd, optim_sd, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "SD_latest_99999999.pth"))
 
       if global_step % hps.train.eval_interval == 0 and global_step != 0:
         evaluate(hps, net_g, eval_loader, writer_eval, logger)
         utils.save_checkpoint(net_g, optim_g, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "G_{}.pth".format(global_step)))
         utils.save_checkpoint(net_d, optim_d, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "D_{}.pth".format(global_step)))
+        utils.save_checkpoint(net_sd, optim_sd, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "SD_{}.pth".format(global_step)))
         utils.save_checkpoint(net_g, optim_g, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "G_latest_99999999.pth"))
         utils.save_checkpoint(net_d, optim_d, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "D_latest_99999999.pth"))
+        utils.save_checkpoint(net_sd, optim_sd, hps.train.learning_rate, epoch, os.path.join(hps.model_dir, "SD_latest_99999999.pth"))
     global_step += 1
 
  
