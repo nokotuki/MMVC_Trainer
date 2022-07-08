@@ -176,8 +176,6 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
   optim_g, optim_d, optim_sd = optims
   scheduler_g, scheduler_d, scheduler_sd = schedulers
   train_loader, eval_loader = loaders
-  #speaker onehot vector
-  speakers_onehot = F.one_hot(speakers)
   if writers is not None:
     writer, writer_eval = writers
 
@@ -192,6 +190,8 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     spec, spec_lengths = spec.cuda(rank, non_blocking=True), spec_lengths.cuda(rank, non_blocking=True)
     y, y_lengths = y.cuda(rank, non_blocking=True), y_lengths.cuda(rank, non_blocking=True)
     speakers = speakers.cuda(rank, non_blocking=True)
+    #speaker onehot vector
+    speakers_onehot = F.one_hot(speakers, num_classes=hps.data.n_speakers)
 
     with autocast(enabled=hps.train.fp16_run):
       y_hat, l_length, attn, ids_slice, x_mask, z_mask,\
@@ -229,11 +229,10 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     scaler.step(optim_d)
 
     # SpeakerDiscriminator
-    y_hat_label = net_sd(y_hat.detach())
     y_label = net_sd(y)
     with autocast(enabled=False):
       #y_hat_label_loss = torch.sum(torch.abs(y_hat_label - speakers_onehot), 1)
-      loss_speaker_disc_all = F.l1_loss(y_label - speakers_onehot)
+      loss_speaker_disc_all = F.l1_loss(y_label,speakers_onehot) * hps.train.c_mel
     optim_sd.zero_grad()
     scaler.scale(loss_speaker_disc_all).backward()
     scaler.unscale_(optim_sd)
@@ -243,11 +242,12 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     with autocast(enabled=hps.train.fp16_run):
       # Generator
       y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(y, y_hat)
+      y_hat_label = net_sd(y_hat.detach())
       with autocast(enabled=False):
         loss_dur = torch.sum(l_length.float())
         loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
         loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
-        loss_label = F.l1_loss(y_hat_label - speakers_onehot)
+        loss_label = F.l1_loss(y_hat_label, speakers_onehot) * hps.train.c_mel
         loss_fm = feature_loss(fmap_r, fmap_g)
         loss_gen, losses_gen = generator_loss(y_d_hat_g)
         loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl + loss_label

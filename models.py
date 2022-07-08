@@ -364,7 +364,7 @@ class DiscriminatorS(torch.nn.Module):
 
 class DiscriminatorSpeaker(torch.nn.Module):
     def __init__(self, gin_channels, use_spectral_norm=False):
-        super(DiscriminatorS, self).__init__()
+        super(DiscriminatorSpeaker, self).__init__()
         norm_f = weight_norm if use_spectral_norm == False else spectral_norm
         self.convs = nn.ModuleList([
             norm_f(Conv1d(1, 16, 15, 1, padding=7)),
