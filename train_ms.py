@@ -229,10 +229,24 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     scaler.step(optim_d)
 
     # SpeakerDiscriminator
-    y_label = net_sd(y)
+    print(y.shape)
+    print(z.shape)
+    print(y_mel.shape)
+    y_label = net_sd(y_mel)
+    print(speakers_onehot)
+    print(y_label)
+    print(torch.argmax(speakers_onehot, dim=1))
+    print(torch.argmax(y_label, dim=1))
     with autocast(enabled=False):
       #y_hat_label_loss = torch.sum(torch.abs(y_hat_label - speakers_onehot), 1)
-      loss_speaker_disc_all = F.l1_loss(y_label,speakers_onehot) * hps.train.c_mel
+      #loss_speaker_disc_all = F.l1_loss(y_label,speakers_onehot) * hps.train.c_mel
+      ans_disc = torch.argmax(y_label, dim=1)
+      ans_orig = torch.argmax(speakers_onehot, dim=1)
+      loss_penalty = torch.mean(torch.clamp(input=torch.abs(ans_disc.to(torch.float) - ans_orig.to(torch.float)), min=0.0, max=1.0)) * 1.0
+      loss_speaker_disc = torch.mean(torch.sum(torch.abs(y_label - speakers_onehot),1))
+      loss_speaker_disc_all = loss_penalty + loss_speaker_disc
+      print(loss_penalty)
+      print(loss_speaker_disc)
     optim_sd.zero_grad()
     scaler.scale(loss_speaker_disc_all).backward()
     scaler.unscale_(optim_sd)
@@ -242,12 +256,16 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
     with autocast(enabled=hps.train.fp16_run):
       # Generator
       y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(y, y_hat)
-      y_hat_label = net_sd(y_hat.detach())
+      y_hat_label = net_sd(y_hat_mel.detach())
       with autocast(enabled=False):
         loss_dur = torch.sum(l_length.float())
         loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
         loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
-        loss_label = F.l1_loss(y_hat_label, speakers_onehot) * hps.train.c_mel
+        #loss_label = F.l1_loss(y_hat_label, speakers_onehot) * hps.train.c_mel
+        if loss_speaker_disc_all > 1.0:
+          loss_label = torch.tensor(0.0)
+        else:
+          loss_label = torch.mean(torch.sum(torch.abs(y_hat_label - speakers_onehot),1)) * hps.train.c_mel
         loss_fm = feature_loss(fmap_r, fmap_g)
         loss_gen, losses_gen = generator_loss(y_d_hat_g)
         loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl + loss_label
@@ -301,7 +319,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
  
 def evaluate(hps, generator, eval_loader, writer_eval, logger):
-    generator.eval()
+    #generator.eval()
     scalar_dict = {}
     scalar_dict.update({"loss/g/mel": 0.0, "loss/g/dur": 0.0, "loss/g/kl": 0.0})
     with torch.no_grad():

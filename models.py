@@ -374,12 +374,15 @@ class DiscriminatorSpeaker(torch.nn.Module):
             norm_f(Conv1d(1024, 1024, 41, 4, groups=256, padding=20)),
             norm_f(Conv1d(1024, 1024, 5, 1, padding=2)),
         ])
+        #self.imputlayer = nn.Linear(1024*20, 1024)
+        self.classifier = nn.Linear(20, gin_channels)
         self.conv_post = norm_f(Conv1d(1024, 1, 3, 1, padding=1))
-        self.classifier = nn.Linear(32, gin_channels)
         self.sm = nn.Softmax(dim=1)
 
     def forward(self, x):
-
+        x = torch.flatten(x, 1, -1)
+        x = x.unsqueeze(1)
+        print(x.shape)
         for l in self.convs:
             x = l(x)
             x = F.leaky_relu(x, modules.LRELU_SLOPE)
