@@ -548,9 +548,20 @@ class SynthesizerTrn(nn.Module):
     note_m_p = torch.matmul(note_attn.squeeze(1), note_m_p.transpose(1, 2)).transpose(1, 2)
     note_logs_p = torch.matmul(note_attn.squeeze(1), note_logs_p.transpose(1, 2)).transpose(1, 2)
 
-    z_slice, ids_slice = commons.rand_slice_segments(z, y_lengths, self.segment_size)
-    o = self.dec(z_slice, g=g)
-    return o, (attn, note_attn), ids_slice, (x_mask, note_mask), y_mask, (z, z_p, (m_p, note_m_p), (logs_p, note_logs_p), m_q, logs_q)
+    harf_y_lengths = y_lengths // 4
+    n_segment_batch = harf_y_lengths // self.segment_size
+    n_segment = min(n_segment_batch)
+    z_slice, ids_slice = commons.rand_slice_segments(z, y_lengths, self.segment_size * n_segment)
+    z_slice_ = torch.chunk(z_slice, n_segment, dim=2)
+    if len(z_slice_) > 1:
+        o = self.dec(z_slice_[0], g=g)
+        for z_s in z_slice_[1:]:
+            o = torch.cat((o, self.dec(z_s, g=g)),2)
+
+    else:
+        o = self.dec(z_slice_[0], g=g)
+        
+    return o, (attn, note_attn), (ids_slice, len(z_slice_)), (x_mask, note_mask), y_mask, (z, z_p, (m_p, note_m_p), (logs_p, note_logs_p), m_q, logs_q)
 
   def voice_conversion(self, y, y_lengths, sid_src, sid_tgt):
     assert self.n_speakers > 0, "n_speakers have to be larger than 0."

@@ -333,6 +333,8 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
 
     def get_note(self, note):
         note = note.split('-')
+        #note_ = [int(i) for i in note]
+        note = list(map(int, note))
         note_tensor = torch.LongTensor(note)
         return note_tensor
 
@@ -368,7 +370,7 @@ class TextAudioSpeakerCollate():
         max_text_len = max([len(x[0]) for x in batch])
         max_spec_len = max([x[1].size(1) for x in batch])
         max_wav_len = max([x[2].size(1) for x in batch])
-        max_note_len = max([x[3].size(1) for x in batch])
+        max_note_len = max([len(x[4]) for x in batch])
 
         text_lengths = torch.LongTensor(len(batch))
         spec_lengths = torch.LongTensor(len(batch))
