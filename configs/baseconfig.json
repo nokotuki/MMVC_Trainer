@@ -24,6 +24,7 @@
     "validation_files": "filelists/dec_not_propagation_label_and_change_melspec_textful_val.txt",
     "training_files_notext": "filelists/dec_not_propagation_label_and_change_melspec_textless.txt",
     "validation_files_notext": "filelists/dec_not_propagation_label_and_change_melspec_val_textless.txt",
+    "Correspondence": "filelists/dec_not_propagation_label_and_change_melspec_val_textless.txt",
     "text_cleaners": [
       "japanese_cleaners"
     ],

@@ -20,8 +20,10 @@ def get_f0(wav_path, fs = 24000, hop = 128):
     return f0
 
 def f0_to_note(f0, borders):
-    f0 = f0[0::2]
-    f0 = f0[0::2]
+    print(f0.shape)
+    f0 = f0[0::4]
+    #f0 = f0[0::2]
+    print(f0.shape)
     note = np.zeros(f0.shape)
     borders = borders[1:]
 
@@ -67,6 +69,7 @@ def create_json(filename, num_speakers, sr, config_path):
     data['data']['validation_files'] = 'filelists/' + filename + '_textful_val.txt'
     data['data']['training_files_notext'] = 'filelists/' + filename + '_textless.txt'
     data['data']['validation_files_notext'] = 'filelists/' + filename + '_val_textless.txt'
+    data['data']['Correspondence'] = 'filelists/' + filename + '_Correspondence.txt'
     data['data']['sampling_rate'] = sr
     data['data']['n_speakers'] = num_speakers
 
@@ -104,27 +107,30 @@ def create_dataset(filename, note_list_path = "note_correspondence.csv"):
         end_counter = 0
         val_flag = True
         while True:
-            for lab, wav in zip(lab_file_list, wav_file_list):
-                with open(lab, 'r', encoding="utf-8") as f:
-                    mozi = f.read().split("\n")
-                print(str(mozi))
-                test = mozi2phone(str(mozi))
-                print(test)
-                note = get_note_text(wav, note_list_path)
-                print(wav + "|"+ str(speaker_id) + "|"+ test + note)
-                if counter % 10 != 0:
-                    output_file_list.append(wav + "|"+ str(speaker_id) + "|"+ test + "|"+ note + "\n")
-                else:
-                    if val_flag:
-                        output_file_list_val.append(wav + "|"+ str(speaker_id) + "|"+ test + "|"+ note + "\n")
+            if val_flag:
+                for lab, wav in zip(lab_file_list, wav_file_list):
+                    with open(lab, 'r', encoding="utf-8") as f:
+                        mozi = f.read().split("\n")
+                    print(str(mozi))
+                    test = mozi2phone(str(mozi))
+                    print(test)
+                    note = get_note_text(wav, note_list_path)
+                    print(wav + "|"+ str(speaker_id) + "|"+ test + note)
+                    if counter % 10 != 0:
+                        output_file_list.append(wav + "|"+ str(speaker_id) + "|"+ test + "|"+ note + "\n")      
                     else:
-                        pass
-                
-                counter = counter +1
-                end_counter = end_counter + 1
-                if end_counter == max_wav_files:
-                    break
-            val_flag = False
+                        output_file_list_val.append(wav + "|"+ str(speaker_id) + "|"+ test + "|"+ note + "\n")
+                    counter = counter +1
+                    end_counter = end_counter + 1
+                    if end_counter == max_wav_files:
+                        break
+                val_flag = False
+            else:
+                for x in output_file_list:
+                    output_file_list.append(x)
+                    end_counter = end_counter + 1
+                    if end_counter == max_wav_files:
+                        break                      
             if end_counter == max_wav_files:
                 break
         Correspondence_list.append(str(speaker_id)+"|"+os.path.basename(d) + "\n")
