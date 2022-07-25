@@ -316,7 +316,7 @@ def evaluate(hps, generator, eval_loader, writer_eval, logger):
           with autocast(enabled=False):
             loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
             loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
-            loss_note_kl = kl_loss(z_p, logs_q, note_m_p, note_logs_p, z_mask) * hps.train.c_kl
+            loss_note_kl = kl_loss(z, logs_q, note_m_p, note_logs_p, z_mask) * hps.train.c_kl
         scalar_dict["loss/g/mel"] = scalar_dict["loss/g/mel"] + loss_mel
         scalar_dict["loss/g/kl"] = scalar_dict["loss/g/kl"] + loss_kl
         scalar_dict["loss/g/note_kl"] = scalar_dict["loss/g/note_kl"] + loss_note_kl

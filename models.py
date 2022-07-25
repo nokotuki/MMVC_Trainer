@@ -534,8 +534,8 @@ class SynthesizerTrn(nn.Module):
 
       note_s_p_sq_r = torch.exp(-2 * note_logs_p) # [b, d, t]
       note_neg_cent1 = torch.sum(-0.5 * math.log(2 * math.pi) - note_logs_p, [1], keepdim=True) # [b, 1, t_s]
-      note_neg_cent2 = torch.matmul(-0.5 * (z_p ** 2).transpose(1, 2), note_s_p_sq_r) # [b, t_t, d] x [b, d, t_s] = [b, t_t, t_s]
-      note_neg_cent3 = torch.matmul(z_p.transpose(1, 2), (note_m_p * note_s_p_sq_r)) # [b, t_t, d] x [b, d, t_s] = [b, t_t, t_s]
+      note_neg_cent2 = torch.matmul(-0.5 * (z ** 2).transpose(1, 2), note_s_p_sq_r) # [b, t_t, d] x [b, d, t_s] = [b, t_t, t_s]
+      note_neg_cent3 = torch.matmul(z.transpose(1, 2), (note_m_p * note_s_p_sq_r)) # [b, t_t, d] x [b, d, t_s] = [b, t_t, t_s]
       note_neg_cent4 = torch.sum(-0.5 * (note_m_p ** 2) * note_s_p_sq_r, [1], keepdim=True) # [b, 1, t_s]
       note_neg_cent = note_neg_cent1 + note_neg_cent2 + note_neg_cent3 + note_neg_cent4
 
