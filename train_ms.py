@@ -222,7 +222,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
       with autocast(enabled=False):
         loss_mel = F.l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
         loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * hps.train.c_kl
-        loss_note_kl = kl_loss(z_p, logs_q, note_m_p, note_logs_p, z_mask) * hps.train.c_kl
+        loss_note_kl = kl_loss(z, logs_q, note_m_p, note_logs_p, z_mask) * hps.train.c_kl
         loss_fm = feature_loss(fmap_r, fmap_g)
         loss_gen, losses_gen = generator_loss(y_d_hat_g)
         loss_gen_all = loss_gen + loss_fm + loss_mel + loss_kl + loss_note_kl
