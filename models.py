@@ -309,14 +309,12 @@ class Generator(torch.nn.Module):
         self.ups.apply(init_weights)
 
         if gin_channels != 0:
-            #self.cond = nn.Conv1d(gin_channels, upsample_initial_channel, 1)
-            gin_channels = 0
+            self.cond = nn.Conv1d(gin_channels, upsample_initial_channel, 1)
 
     def forward(self, x, g=None):
         x = self.conv_pre(x)
         if g is not None:
-          #x = x + self.cond(g)
-          g=None
+            x = x + self.cond(g)
 
         for i in range(self.num_upsamples):
             x = F.leaky_relu(x, modules.LRELU_SLOPE)

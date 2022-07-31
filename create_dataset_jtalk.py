@@ -8,6 +8,7 @@ import pyworld as pw
 import numpy as np
 import csv
 from scipy.io import wavfile
+from retry import retry
 
 def get_f0(wav_path, fs = 24000, hop = 128):
     sr, x = wavfile.read(wav_path, fs)
@@ -20,10 +21,7 @@ def get_f0(wav_path, fs = 24000, hop = 128):
     return f0
 
 def f0_to_note(f0, borders):
-    print(f0.shape)
     f0 = f0[0::4]
-    #f0 = f0[0::2]
-    print(f0.shape)
     note = np.zeros(f0.shape)
     borders = borders[1:]
 
@@ -48,6 +46,7 @@ def note2text(note):
     note_text = '-'.join(map(str, map(int, note)))
     return note_text
 
+@retry(tries=30, delay=10)
 def get_note_text(wav_path, note_list_path):
     f0 = get_f0(wav_path)
     note_list = get_note_list(note_list_path)
@@ -106,18 +105,22 @@ def create_dataset(filename, note_list_path = "note_correspondence.csv"):
         counter = 0
         end_counter = 0
         val_flag = True
+        temp_list = list()
         while True:
             if val_flag:
                 for lab, wav in zip(lab_file_list, wav_file_list):
+                    if os.path.basename(lab)[:-4] != os.path.basename(wav)[:-4]:
+                        print(lab[:-4])
+                        print(wav[:-4])
+                        print("Warn!!!!")
                     with open(lab, 'r', encoding="utf-8") as f:
                         mozi = f.read().split("\n")
-                    print(str(mozi))
                     test = mozi2phone(str(mozi))
-                    print(test)
                     note = get_note_text(wav, note_list_path)
                     print(wav + "|"+ str(speaker_id) + "|"+ test + note)
                     if counter % 10 != 0:
-                        output_file_list.append(wav + "|"+ str(speaker_id) + "|"+ test + "|"+ note + "\n")      
+                        output_file_list.append(wav + "|"+ str(speaker_id) + "|"+ test + "|"+ note + "\n") 
+                        temp_list.append(wav + "|"+ str(speaker_id) + "|"+ test + "|"+ note + "\n")
                     else:
                         output_file_list_val.append(wav + "|"+ str(speaker_id) + "|"+ test + "|"+ note + "\n")
                     counter = counter +1
@@ -126,7 +129,7 @@ def create_dataset(filename, note_list_path = "note_correspondence.csv"):
                         break
                 val_flag = False
             else:
-                for x in output_file_list:
+                for x in temp_list:
                     output_file_list.append(x)
                     end_counter = end_counter + 1
                     if end_counter == max_wav_files:
@@ -135,7 +138,7 @@ def create_dataset(filename, note_list_path = "note_correspondence.csv"):
                 break
         Correspondence_list.append(str(speaker_id)+"|"+os.path.basename(d) + "\n")
         speaker_id = speaker_id + 1
-        if speaker_id > 108:
+        if speaker_id > 110:
             break
 
     for d in textless_dir_list:
