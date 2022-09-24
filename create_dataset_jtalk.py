@@ -87,96 +87,6 @@ def create_dataset(filename):
         f.writelines(Correspondence_list)
     return speaker_id
 
-def create_dataset_zundamon(filename):
-    textful_dir_list = glob.glob("dataset/textful/*")
-    textless_dir_list = glob.glob("dataset/textless/*")
-    textful_dir_list.sort()
-    textless_dir_list.sort()
-    Correspondence_list = list()
-    output_file_list = list()
-    output_file_list_val = list()
-    output_file_list_textless = list()
-    output_file_list_val_textless = list()
-    #paths
-    my_path = "dataset/textful/00_myvoice"
-    zundamon_path = "dataset/textful/1205_zundamon"
-
-    #set list wav and text
-    #myvoice
-    speaker_id = 107
-    d = my_path
-    wav_file_list = glob.glob(d + "/wav/*.wav")
-    lab_file_list = glob.glob(d + "/text/*.txt")
-    wav_file_list.sort()
-    lab_file_list.sort()
-    if len(wav_file_list) == 0:
-        print("Error" + d + "/wav に音声データがありません")
-        exit()
-    counter = 0
-    for lab, wav in zip(lab_file_list, wav_file_list):
-        with open(lab, 'r', encoding="utf-8") as f:
-            mozi = f.read().split("\n")
-        print(str(mozi))
-        test = mozi2phone(str(mozi))
-        print(test)
-        print(wav + "|"+ str(speaker_id) + "|"+ test)
-        if counter % 10 != 0:
-            output_file_list.append(wav + "|"+ str(speaker_id) + "|"+ test + "\n")
-        else:
-            output_file_list_val.append(wav + "|"+ str(speaker_id) + "|"+ test + "\n")
-        counter = counter +1
-    Correspondence_list.append(str(speaker_id)+"|"+os.path.basename(d) + "\n")
-
-    speaker_id = 100
-    d = zundamon_path
-    wav_file_list = glob.glob(d + "/wav/*.wav")
-    lab_file_list = glob.glob(d + "/text/*.txt")
-    wav_file_list.sort()
-    lab_file_list.sort()
-    if len(wav_file_list) == 0:
-        print("Error" + d + "/wav に音声データがありません")
-        exit()
-    counter = 0
-    for lab, wav in zip(lab_file_list, wav_file_list):
-      with open(lab, 'r', encoding="utf-8") as f:
-          mozi = f.read().split("\n")
-      print(str(mozi))
-      test = mozi2phone(str(mozi))
-      print(test)
-      print(wav + "|"+ str(speaker_id) + "|"+ test)
-      if counter % 10 != 0:
-          output_file_list.append(wav + "|"+ str(speaker_id) + "|"+ test + "\n")
-      else:
-          output_file_list_val.append(wav + "|"+ str(speaker_id) + "|"+ test + "\n")
-      counter = counter +1
-    Correspondence_list.append(str(speaker_id)+"|"+os.path.basename(d) + "\n")
-
-    for d in textless_dir_list:
-        wav_file_list = glob.glob(d+"/*.wav")
-        wav_file_list.sort()
-        counter = 0
-        for wav in wav_file_list:
-            print(wav + "|"+ str(speaker_id) + "|a")
-            if counter % 10 != 0:
-                output_file_list_textless.append(wav + "|"+ str(speaker_id) + "|a" + "\n")
-            else:
-                output_file_list_val_textless.append(wav + "|"+ str(speaker_id) + "|a" + "\n")
-            counter = counter +1
-        Correspondence_list.append(str(speaker_id)+"|"+os.path.basename(d) + "\n")
-        speaker_id = speaker_id + 1
-
-    with open('filelists/' + filename + '_textful.txt', 'w', encoding='utf-8', newline='\n') as f:
-        f.writelines(output_file_list)
-    with open('filelists/' + filename + '_textful_val.txt', 'w', encoding='utf-8', newline='\n') as f:
-        f.writelines(output_file_list_val)
-    with open('filelists/' + filename + '_textless.txt', 'w', encoding='utf-8', newline='\n') as f:
-        f.writelines(output_file_list_textless)
-    with open('filelists/' + filename + '_val_textless.txt', 'w', encoding='utf-8', newline='\n') as f:
-        f.writelines(output_file_list_val_textless)
-    with open('filelists/' + filename + '_Correspondence.txt', 'w', encoding='utf-8', newline='\n') as f:
-        f.writelines(Correspondence_list)
-    return 110
-
 def create_dataset_character(filename, tid):
     textful_dir_list = glob.glob("dataset/textful/*")
     textless_dir_list = glob.glob("dataset/textless/*")
@@ -189,7 +99,7 @@ def create_dataset_character(filename, tid):
     output_file_list_val_textless = list()
     #paths
     my_path = "dataset/textful/00_myvoice"
-    zundamon_path = "dataset/textful/01_target"
+    target_path = "dataset/textful/01_target"
 
     #set list wav and text
     #myvoice
@@ -218,7 +128,7 @@ def create_dataset_character(filename, tid):
     Correspondence_list.append(str(speaker_id)+"|"+os.path.basename(d) + "\n")
 
     speaker_id = tid
-    d = zundamon_path
+    d = target_path
     wav_file_list = glob.glob(d + "/wav/*.wav")
     lab_file_list = glob.glob(d + "/text/*.txt")
     wav_file_list.sort()
@@ -330,8 +240,6 @@ def main():
     print(filename)
     if args.multi_target != None:
         n_spk = create_dataset_multi_character(filename, args.multi_target)
-    elif args.target != 9999 and args.target == 100:
-        n_spk = create_dataset_zundamon(filename)
     elif args.target != 9999:
         n_spk = create_dataset_character(filename, args.target)
     else:

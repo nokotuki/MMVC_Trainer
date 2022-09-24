@@ -4,4 +4,3 @@
 03_target|0
 04_target|1
 05_target|2
-1205_zundamon|100
